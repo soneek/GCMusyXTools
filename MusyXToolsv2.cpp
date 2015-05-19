@@ -53,6 +53,8 @@ typedef struct {
 	u32 size;
 	u16 id;	// 
 	u16 sampleID;
+	u8 rootKey;
+	u8 loopFlag;
 	u16 adsrID;
 } macro;
 
@@ -64,6 +66,10 @@ typedef struct {
 	u8 loopFlag;
 	u8 startNote;
 	u8 endNote;
+	u8 attack;
+	u8 decay;
+	u8 sustain;
+	u8 release;
 	s8 transpose;
 	u8 volume;
 	u8 pan;
@@ -118,22 +124,48 @@ int main(int argc, const char* argv[])
 		for (i = 0; i < 128; i++) {
 			instruments[i].exists = false;
 			instruments[i].noteCount = 0;
+			instruments[i].notes.resize(1);
+			instruments[i].notes[0].sampleID == NULL;
 			drums[i].exists = false;
 			drums[i].noteCount = 0;
+			drums[i].notes.resize(1);
+			drums[i].notes[0].sampleID == NULL;
 		}
 		for (i = 0; i < instCount; i++) {
 			fseek(proj, projInstOffset + i * 6, SEEK_SET);
 			tempID = ReadBE(proj, 16);
 			if (tempID == 0xffff)
 				continue;
-			else {
+			else if (tempID & 0x8000) {	// Normal layer section
+				fseek(proj, 2, SEEK_CUR);
+				tempChar = ReadBE(proj, 8);
+				instruments[tempChar].exists = true;
+				actualInstCount++;
+				instruments[(int)tempChar].id = tempID;
+				instruments[(int)tempChar].notes.resize(128);
+				printf("Instrument %d exists\n", tempChar);
+			}
+
+			else if (tempID & 0x4000) {	// Keymap section 
 				fseek(proj, 2, SEEK_CUR);
 				tempChar = ReadBE(proj, 8);
 				instruments[(int)tempChar].exists = true;
 				actualInstCount++;
 				instruments[(int)tempChar].id = tempID;
 				instruments[(int)tempChar].notes.resize(128);
-				printf("Instrument %d exists\n", tempChar);
+				printf("Instrument %d exists as a keymap\n", tempChar);
+			}
+
+			else {	// Instrument just has info at macro
+				fseek(proj, 2, SEEK_CUR);
+				tempChar = ReadBE(proj, 8);
+				instruments[(int)tempChar].exists = true;
+				actualInstCount++;
+				instruments[(int)tempChar].id = tempID;
+				instruments[(int)tempChar].notes.resize(1);
+				instruments[(int)tempChar].notes[0].startNote = 0;
+				instruments[(int)tempChar].notes[0].endNote = 127; 
+				printf("Instrument %d exists as a single macro\n", tempChar);
 			}
 		}
 
@@ -155,6 +187,35 @@ int main(int argc, const char* argv[])
 			}
 		}
 		fclose(proj);
+
+		// Now getting sample info
+		sdir = fopen(argv[3], "rb");
+		vector<dsp> dsps;
+		fseek(sdir, 0, SEEK_END);
+		u32 sdirSize = ftell(sdir);
+		fseek(sdir, 0, SEEK_SET);
+		int dspCount = (sdirSize - 4) / (32 + 40);
+		dsps.resize(dspCount);
+		for (i = 0; i < dspCount; i++) {
+			dsps[i].id = ReadBE(sdir, 16);
+			printf("Reading sample %X\n", dsps[i].id);
+			fseek(sdir, 2, SEEK_CUR);
+			dsps[i].sampOffset = ReadBE(sdir, 32);
+			fseek(sdir, 4, SEEK_CUR);
+			dsps[i].baseNote = ReadBE(sdir, 8);
+			fseek(sdir, 1, SEEK_CUR);
+			dsps[i].sampleRate = ReadBE(sdir, 16);
+			dsps[i].sampleCount = ReadBE(sdir, 32);
+			dsps[i].loopStart = ReadBE(sdir, 32);
+			dsps[i].loopLength = ReadBE(sdir, 32);
+			if (dsps[i].loopLength > 0)
+				dsps[i].loopFlag = 1;
+			else
+				dsps[i].loopFlag = 0;
+			dsps[i].infoOffset = ReadBE(sdir, 32);
+		}
+
+		fclose(sdir);
 
 		// Reading pool
 		pool = fopen(argv[2], "rb");
@@ -189,6 +250,12 @@ int main(int argc, const char* argv[])
 					if (tempChar == 0x10) {
 						fseek(pool, -3, SEEK_CUR);
 						macros[macroCount - 1].sampleID = ReadBE(pool, 16);
+						for (i = 0; i < dspCount; i++) {
+							if (dsps[i].id == macros[macroCount - 1].sampleID) {
+								macros[macroCount - 1].rootKey = dsps[i].baseNote;
+								macros[macroCount - 1].loopFlag = dsps[i].loopFlag;
+							}
+						}
 						printf("Macro %X uses sample # %X\n", macroCount - 1, macros[macroCount - 1].sampleID);
 						fseek(pool, 5, SEEK_CUR);
 					}
@@ -238,8 +305,10 @@ int main(int argc, const char* argv[])
 				else {
 					for (k = 0; k < macroCount; k++) {
 						if (macros[k].id == tempID) {
-							printf("Drumkit %d note %d uses macro %X\n", i, j, k);
+							printf("Drumkit %d note %d uses macro %X\n", i, j, macros[k].id);
 							drums[curInstrument].notes[j].sampleID = macros[k].sampleID;
+							drums[curInstrument].notes[j].baseNote = macros[k].rootKey;
+							drums[curInstrument].notes[j].loopFlag = macros[k].loopFlag;
 							drums[curInstrument].notes[j].exists = true;
 							drums[curInstrument].notes[j].transpose = ReadBE(pool, 8);
 							drums[curInstrument].notes[j].pan = ReadBE(pool, 8);
@@ -255,7 +324,7 @@ int main(int argc, const char* argv[])
 		printf("Checking instrument layers\n");
 		fseek(pool, layerOffset, SEEK_SET);
 		nextOffset = tempOffset = ftell(pool);
-		while (ftell(pool) < poolSize - 12) {
+		while (ftell(pool) < poolSize - 4) {
 			tempSize = ReadBE(pool, 32);
 			nextOffset += tempSize;
 			tempID = ReadBE(pool, 16);
@@ -265,8 +334,8 @@ int main(int argc, const char* argv[])
 					curInstrument = j;
 					break;
 				}
-				else
-					continue;
+//				else
+//					continue;
 			}
 			instruments[curInstrument].noteCount = ReadBE(pool, 32);
 			instruments[curInstrument].notes.resize((int)instruments[curInstrument].noteCount);
@@ -280,8 +349,10 @@ int main(int argc, const char* argv[])
 					printf("Instrument %d at 0x%X\n", curInstrument, ftell(pool));
 					for (k = 0; k < macroCount; k++) {
 						if (macros[k].id == tempID) {
-							printf("\tNote region %d uses macro %X\n", j, k);
+							printf("\tNote region %d uses macro %X\n", j, macros[k].id);
 							instruments[curInstrument].notes[j].sampleID = macros[k].sampleID;
+							instruments[curInstrument].notes[j].baseNote = macros[k].rootKey;
+							instruments[curInstrument].notes[j].loopFlag = macros[k].loopFlag;
 							instruments[curInstrument].notes[j].exists = true;
 							instruments[curInstrument].notes[j].startNote = ReadBE(pool, 8);
 							instruments[curInstrument].notes[j].endNote = ReadBE(pool, 8);
@@ -292,49 +363,40 @@ int main(int argc, const char* argv[])
 							fseek(pool, 3, SEEK_CUR);
 							break;
 						}
-						else
-							fseek(pool, 10, SEEK_CUR);
+//						else
+//							fseek(pool, 10, SEEK_CUR);
 					}
 				}
 			}
 		}
 
-		fclose(pool);
-
-		// Now getting sample info
-		sdir = fopen(argv[3], "rb");
-		vector<dsp> dsps;
-		fseek(sdir, 0, SEEK_END);
-		u32 sdirSize = ftell(sdir);
-		fseek(sdir, 0, SEEK_SET);
-		int dspCount = (sdirSize - 4) / (32 + 40);
-		dsps.resize(dspCount);
-		for (i = 0; i < dspCount; i++) {
-			dsps[i].id = ReadBE(sdir, 16);
-			printf("Reading sample %X\n", dsps[i].id);
-			fseek(sdir, 2, SEEK_CUR);
-			dsps[i].sampOffset = ReadBE(sdir, 32); 
-			fseek(sdir, 4, SEEK_CUR);
-			dsps[i].baseNote = ReadBE(sdir, 8);
-			fseek(sdir, 1, SEEK_CUR);
-			dsps[i].sampleRate = ReadBE(sdir, 16);
-			dsps[i].sampleCount = ReadBE(sdir, 32);
-			dsps[i].loopStart = ReadBE(sdir, 32);
-			dsps[i].loopLength = ReadBE(sdir, 32);
-			if (dsps[i].loopLength > 0)
-				dsps[i].loopFlag = 1;
-			else
-				dsps[i].loopFlag = 0;
-			dsps[i].infoOffset = ReadBE(sdir, 32);
+		printf("Taking care of instruments with only macros\n");
+		for (i = 0; i < 128; i++) {
+			if (instruments[i].exists && instruments[i].notes[0].sampleID == NULL) {
+				printf("Looking for instrument %d macro\n", i);
+				for (j = 0; j < macroCount; j++) {
+					if (macros[j].id == instruments[i].id) {
+						printf("\tMacro %X\n", macros[j].id);
+						instruments[i].notes[0].sampleID = macros[j].sampleID;
+						instruments[i].notes[0].baseNote = macros[j].rootKey;
+						printf("\tRoot Key %X\n", macros[j].rootKey);
+						instruments[i].notes[0].exists = true;
+						instruments[i].notes[0].pan = 64;	// Assuming this sample is centered
+						instruments[i].noteCount = 1;
+						
+						// Reserved for ADSR
+					}
+				}
+			}
 		}
-
-		fclose(sdir);
+		fclose(pool);
 
 		ofstream bankTemplate("soundfontBuild.txt");
 		stringstream bankTemplateText;
 		string bankText;
 		bankTemplateText << "[Samples]\n";
 
+		printf("Writing samples\n");
 		for (i = 0; i < dspCount; i++) {
 			bankTemplateText << "\n    SampleName=" << hex << dsps[i].id << "\n        SampleRate=" << to_string(dsps[i].sampleRate) << "\n        Key=" << to_string(dsps[i].baseNote) << "\n        FineTune=0\n        Type=1\n";
 		}
@@ -342,29 +404,20 @@ int main(int argc, const char* argv[])
 
 		
 		for (i = 0; i < 128; i++) {
-			if (drums[i].exists) {
+			if (drums[i].exists && drums[i].noteCount) {
 
 				bankTemplateText << "\n    InstrumentName=Drum" << i << "\n";
 				for (j = 0; j < 128; j++) {
 
 					if (drums[i].notes[j].exists) {
 						printf("Printing Drum %d: Note Region %d\n", i, j);
-						for (k = 0; k < dspCount; k++) {
-							if (dsps[k].id == drums[i].notes[j].sampleID) {
-								drums[i].notes[j].loopFlag = dsps[k].loopFlag;
-								drums[i].notes[j].baseNote = dsps[k].baseNote;
-								break;
-							}
-							else
-								continue;
-						}
 
 						bankTemplateText << "\n        Sample=" << hex << drums[i].notes[j].sampleID << "\n";
 						bankTemplateText << "            Z_LowKey=" << to_string(drums[i].notes[j].startNote) << "\n";
 						bankTemplateText << "            Z_HighKey=" << to_string(drums[i].notes[j].endNote) << "\n";
 						bankTemplateText << "            Z_LowVelocity=0\n";
 						bankTemplateText << "            Z_HighVelocity=127\n";
-						bankTemplateText << "            Z_overridingRootKey=" << to_string(drums[i].notes[j].baseNote) << "\n";
+						bankTemplateText << "            Z_overridingRootKey=" << to_string(drums[i].notes[j].baseNote + drums[i].notes[j].transpose) << "\n";
 						//						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(instruments[j].notes[k].getVolume())) << "\n";
 						bankTemplateText << "            Z_pan=" << to_string((int)floor(getPan(drums[i].notes[j].pan))) << "\n";
 						/*						bankTemplateText << "            Z_attackVolEnv=" << to_string((int)instruments[j].notes[k].getAttack()) << "\n";
@@ -380,14 +433,14 @@ int main(int argc, const char* argv[])
 						continue;
 
 
+				}
 			}
 			else
 				continue;
 		}
 
-
 		for (i = 0; i < 128; i++) {
-			if (instruments[i].exists) {
+			if (instruments[i].exists && instruments[i].noteCount) {
 				printf("Printing Instrument %d:\n", i);
 
 				bankTemplateText << "\n    InstrumentName=Instrument" << i << "\n";
@@ -395,22 +448,13 @@ int main(int argc, const char* argv[])
 
 					if (instruments[i].notes[j].exists) {
 						printf("\tNote Region %d\n", j);
-						for (k = 0; k < dspCount; k++) {
-							if (dsps[k].id == instruments[i].notes[j].sampleID) {
-								instruments[i].notes[j].loopFlag = dsps[k].loopFlag;
-								instruments[i].notes[j].baseNote = dsps[k].baseNote;
-								break;
-							}
-							else
-								continue;
-						}
 
 						bankTemplateText << "\n        Sample=" << hex << instruments[i].notes[j].sampleID << "\n";
 						bankTemplateText << "            Z_LowKey=" << to_string(instruments[i].notes[j].startNote) << "\n";
 						bankTemplateText << "            Z_HighKey=" << to_string(instruments[i].notes[j].endNote) << "\n";
 						bankTemplateText << "            Z_LowVelocity=0\n";
 						bankTemplateText << "            Z_HighVelocity=127\n";
-						bankTemplateText << "            Z_overridingRootKey=" << to_string(instruments[i].notes[j].baseNote) << "\n";
+						bankTemplateText << "            Z_overridingRootKey=" << to_string(instruments[i].notes[j].baseNote + instruments[i].notes[j].transpose) << "\n";
 						//						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(instruments[j].notes[k].getVolume())) << "\n";
 						bankTemplateText << "            Z_pan=" << to_string((int)floor(getPan(instruments[i].notes[j].pan))) << "\n";
 						/*						bankTemplateText << "            Z_attackVolEnv=" << to_string((int)instruments[j].notes[k].getAttack()) << "\n";
@@ -437,7 +481,7 @@ int main(int argc, const char* argv[])
 		bankTemplateText << "\n\n[Presets]\n";
 
 		for (i = 0; i < 128; i++) {
-			if (drums[i].exists) {
+			if (drums[i].exists && drums[i].noteCount) {
 				bankTemplateText << "\n    PresetName=Program" << i << "Drum\n        Bank=128\n        Program=" << i << "\n";
 				bankTemplateText << "\n        Instrument=Drum" << i << "\n            L_LowKey=0\n            L_HighKey=127\n            L_LowVelocity=0\n            L_HighVelocity=127\n\n";
 			}
@@ -446,7 +490,7 @@ int main(int argc, const char* argv[])
 		}
 
 		for (i = 0; i < 128; i++) {
-			if (instruments[i].exists) {
+			if (instruments[i].exists && instruments[i].noteCount) {
 				bankTemplateText << "\n    PresetName=Program" << i << "Instrument\n        Bank=0\n        Program=" << i << "\n";
 				bankTemplateText << "\n        Instrument=Instrument" << i << "\n            L_LowKey=0\n            L_HighKey=127\n            L_LowVelocity=0\n            L_HighVelocity=127\n\n";
 			}
