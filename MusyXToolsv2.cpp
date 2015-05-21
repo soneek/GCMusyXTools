@@ -32,6 +32,13 @@ static inline u32 ReadBE(FILE *f, s32 b) {
 	return v;
 }
 
+static inline u32 ReadLE(FILE *f, u32 b) {
+	u32 v = 0;
+	for (u32 i = 0; i<b; i += 8) v |= fgetc(f) << i;
+	return v;
+}
+
+
 typedef struct {
 	u32 id;
 	u32 offset;
@@ -102,12 +109,16 @@ typedef struct {
 	u16 id;
 	u8 attack;
 	u8 attackDecimal;
+	s16 attackTimecents;
 	u8 decay;
 	u8 decayDecimal;
+	s16 decayTimecents;
 	u8 sustain;
 	u8 sustainDecimal;
+	double sustaindB;
 	u8 release;
 	u8 releaseDecimal;
+	double releaseTime;
 } table;
 
 double LogB(double n, double b) {
@@ -130,7 +141,7 @@ float getSustain(float sustain) {
 	if (sustain == 0)
 		return 900;
 	else
-		return 200 * abs(LogB(pow(((float)sustain / 255), 2), 10));
+		return 200 * abs(LogB(((float)sustain / 100), 10));
 }
 
 float timeToTimecents(float time){
@@ -148,7 +159,7 @@ static const char *const general_MIDI_instr_names[128] =
 {
 	"Acoustic Grand Piano", "Bright Acoustic Piano", "Electric Grand Piano", "Honky-tonk Piano", "Rhodes Piano", "Chorused Piano",
 	"Harpsichord", "Clavinet", "Celesta", "Glockenspiel", "Music Box", "Vibraphone", "Marimba", "Xylophone", "Tubular Bells", "Dulcimer",
-	"Hammond Organ", "Percussive Organ", "Rock Organ", "Church Organ", "Reed Organ", "Accordion", "Harmonica", "Tango Accordion",
+	"Drawbar Organ", "Percussive Organ", "Rock Organ", "Church Organ", "Reed Organ", "Accordion", "Harmonica", "Tango Accordion",
 	"Acoustic Guitar (nylon)", "Acoustic Guitar (steel)", "Electric Guitar (jazz)", "Electric Guitar (clean)", "Electric Guitar (muted)",
 	"Overdriven Guitar", "Distortion Guitar", "Guitar Harmonics", "Acoustic Bass", "Electric Bass (finger)", "Electric Bass (pick)",
 	"Fretless Bass", "Slap Bass 1", "Slap Bass 2", "Synth Bass 1", "Synth Bass 2", "Violin", "Viola", "Cello", "Contrabass",
@@ -168,7 +179,7 @@ static const char *const general_MIDI_instr_names[128] =
 int main(int argc, const char* argv[])
 {
 	FILE *proj, *pool, *sdir;
-	int i, j, k, instCount, actualInstCount = 0, drumCount, actualDrumCount = 0, curInstrument = 0;
+	int i, j, k, n, instCount, actualInstCount = 0, drumCount, actualDrumCount = 0, curInstrument = 0;
 	instrument instruments[128];
 	instrument drums[128];
 	vector<instrument> layers;
@@ -220,30 +231,56 @@ int main(int argc, const char* argv[])
 		u32 layerOffset = ReadBE(pool, 32);
 		
 		// Checking ADSR first
+		printf("Checking ADSR tables\n");
 		fseek(pool, adsrOffset, SEEK_SET);
 		nextOffset = tempOffset = ftell(pool);
 		vector<table> tables;
 		int tableCount = 0;
-		while (ftell(pool) < keymapOffset) {
+		while (ftell(pool) < keymapOffset - 4) {
 			tempSize = ReadBE(pool, 32);
 			nextOffset += tempSize;
 //			if (tempSize == 0x10) {	// Only know how to read these tables so far
 				tempID = ReadBE(pool, 16);
 				if (tempID != 0xffff) {
 					tableCount++;
+					printf("Table %X:\n", tempID);
 					tables.resize(tableCount);
 					tables[tableCount - 1].size = tempSize;
 					tables[tableCount - 1].id = tempID;
-					
-					fseek(pool, tempSize - 0xe, SEEK_CUR);
-					tables[tableCount - 1].attack = ReadBE(pool, 8);
-					tables[tableCount - 1].attackDecimal = ReadBE(pool, 8);
-					tables[tableCount - 1].decay = ReadBE(pool, 8);
-					tables[tableCount - 1].decayDecimal = ReadBE(pool, 8);
-					tables[tableCount - 1].sustain = ReadBE(pool, 8);
-					tables[tableCount - 1].sustainDecimal = ReadBE(pool, 8);
-					tables[tableCount - 1].release = ReadBE(pool, 8);
-					tables[tableCount - 1].releaseDecimal = ReadBE(pool, 8);
+					fseek(pool, 2, SEEK_CUR);
+					if (tempSize == 0x1c) {						
+						// skipping attack and decay for now
+//						fseek(pool, 8, SEEK_CUR);
+						fseek(pool, 2, SEEK_CUR);
+
+						tables[tableCount - 1].attackTimecents = ReadLE(pool, 16);
+						fseek(pool, 2, SEEK_CUR);
+						tables[tableCount - 1].decayTimecents = ReadLE(pool, 16);
+						tables[tableCount - 1].sustaindB = (double)(0x1000 - ReadLE(pool, 16)) * 0.025;
+						tables[tableCount - 1].releaseTime = (double)ReadLE(pool, 16) / 1000;
+						printf("\tAttack = %d timecents:\n\tDecay = %d timecents:\n\tSustain Level = -%.03f dB:\n\tRelease = %.03f seconds:\n", tables[tableCount - 1].attackTimecents, tables[tableCount - 1].decayTimecents, tables[tableCount - 1].sustaindB, tables[tableCount - 1].releaseTime);
+						fseek(pool, nextOffset, SEEK_SET);
+					}
+					else {
+						
+						tables[tableCount - 1].attackTimecents = ReadLE(pool, 16);
+						tables[tableCount - 1].decayTimecents = ReadLE(pool, 16);
+						tables[tableCount - 1].sustaindB = (double)(0x1000 - ReadLE(pool, 16)) * 0.025;
+						tables[tableCount - 1].releaseTime = (double)ReadLE(pool, 16) / 1000;
+						printf("\tAttack = %d timecents:\n\tDecay = %d timecents:\n\tSustain Level = -%.03f dB:\n\tRelease = %.03f seconds:\n", tables[tableCount - 1].attackTimecents, tables[tableCount - 1].decayTimecents, tables[tableCount - 1].sustaindB, tables[tableCount - 1].releaseTime);
+						
+						/*
+						tables[tableCount - 1].attack = ReadBE(pool, 8);
+						tables[tableCount - 1].attackDecimal = ReadBE(pool, 8);
+						tables[tableCount - 1].decay = ReadBE(pool, 8);
+						tables[tableCount - 1].decayDecimal = ReadBE(pool, 8);
+						tables[tableCount - 1].sustain = ReadBE(pool, 8);
+						tables[tableCount - 1].sustainDecimal = ReadBE(pool, 8);
+						tables[tableCount - 1].release = ReadBE(pool, 8);
+						tables[tableCount - 1].releaseDecimal = ReadBE(pool, 8);
+						*/
+						fseek(pool, nextOffset, SEEK_SET);
+					}
 				}
 				else 
 					fseek(pool, nextOffset, SEEK_SET);
@@ -346,10 +383,16 @@ int main(int argc, const char* argv[])
 								fseek(pool, 3, SEEK_CUR);
 								if (macros[k].adsrIndex != NULL) {
 									layers[layerCount - 1].notes[j].adsr = true;
-									layers[layerCount - 1].notes[j].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal * 256 / 1e3);
-									layers[layerCount - 1].notes[j].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal * 256 / 1e3);
+									layers[layerCount - 1].notes[j].attack = tables[macros[j].adsrIndex].attackTimecents;
+									layers[layerCount - 1].notes[j].decay = tables[macros[j].adsrIndex].decayTimecents;
+									layers[layerCount - 1].notes[j].sustain = tables[macros[j].adsrIndex].sustaindB * 10;
+									layers[layerCount - 1].notes[j].release = timeToTimecents(tables[macros[j].adsrIndex].releaseTime);
+									/*
+									layers[layerCount - 1].notes[j].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal * 256 / 1e6);
+									layers[layerCount - 1].notes[j].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal * 256 / 1e6);
 									layers[layerCount - 1].notes[j].sustain = (float)(tables[macros[k].adsrIndex].sustain) * 0.0244 + (float)(tables[macros[k].adsrIndex].sustainDecimal * 6.25);
-									layers[layerCount - 1].notes[j].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal * 256 / 1e3);
+									layers[layerCount - 1].notes[j].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal * 256 / 1e6);
+									*/
 								}
 								break;
 							}
@@ -388,10 +431,20 @@ int main(int argc, const char* argv[])
 					for (k = 0; k < layerCount - 1; k++) {	// Reading all layers prior to this one
 						if (layers[k].id == tempID) {
 							printf("Keymap %X note %d uses layer %X\n", layers[i].id, j, layers[k].id);
+							layers[i].noteCount += layers[k].noteCount - 1;
+							layers[i].notes.resize(layers[i].noteCount);
 							layers[i].notes[j] = layers[k].notes[0];	// Only taking the first region for now
 							layers[i].notes[j].transpose = ReadBE(pool, 8);
 							layers[i].notes[j].pan = ReadBE(pool, 8);
 							layers[i].notes[j].exists = true;
+							for (n = 1; n < layers[k].noteCount; n++) {
+								layers[i].notes[layers[i].noteCount - n] = layers[k].notes[n];
+								layers[i].notes[layers[i].noteCount - n].transpose = layers[i].notes[j].transpose;
+								layers[i].notes[layers[i].noteCount - n].pan = layers[i].notes[j].pan;
+								layers[i].notes[layers[i].noteCount - n].exists = true;
+								layers[i].notes[layers[i].noteCount - n].startNote = j;
+								layers[i].notes[layers[i].noteCount - n].endNote = j;
+							}
 							fseek(pool, 4, SEEK_CUR);
 							break;
 						}
@@ -407,10 +460,17 @@ int main(int argc, const char* argv[])
 							layers[i].notes[j].loopFlag = macros[k].loopFlag;
 							if (macros[k].adsrIndex != NULL) {
 								layers[i].notes[j].adsr = true;
-								layers[i].notes[j].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal * 256 / 1e3);
-								layers[i].notes[j].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal * 256 / 1e3);
+								layers[i].notes[j].attack = tables[macros[j].adsrIndex].attackTimecents;
+								layers[i].notes[j].decay = tables[macros[j].adsrIndex].decayTimecents;
+								layers[i].notes[j].sustain = tables[macros[j].adsrIndex].sustaindB * 10;
+								layers[i].notes[j].release = timeToTimecents(tables[macros[j].adsrIndex].releaseTime);
+
+								/*
+								layers[i].notes[j].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal * 256 / 1e6);
+								layers[i].notes[j].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal * 256 / 1e6);
 								layers[i].notes[j].sustain = (float)(tables[macros[k].adsrIndex].sustain) * 0.0244 + (float)(tables[macros[k].adsrIndex].sustainDecimal * 6.25);
-								layers[i].notes[j].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal * 256 / 1e3);
+								layers[i].notes[j].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal * 256 / 1e6);
+								*/
 							}
 							layers[i].notes[j].exists = true;
 							layers[i].notes[j].transpose = ReadBE(pool, 8);
@@ -531,16 +591,16 @@ int main(int argc, const char* argv[])
 						
 						if (macros[j].adsrIndex != NULL) {
 							instruments[i].notes[0].adsr = true;
+							instruments[i].notes[0].attack = tables[macros[j].adsrIndex].attackTimecents;
+							instruments[i].notes[0].decay = tables[macros[j].adsrIndex].decayTimecents;
+							instruments[i].notes[0].sustain = tables[macros[j].adsrIndex].sustaindB * 10;
+							instruments[i].notes[0].release = timeToTimecents(tables[macros[j].adsrIndex].releaseTime);
 							/*
-							instruments[i].notes[0].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal / 1e6);
-							instruments[i].notes[0].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal / 1e6);
-							instruments[i].notes[0].sustain = (float)(tables[macros[k].adsrIndex].sustain) + (float)(tables[macros[k].adsrIndex].sustainDecimal / 1e3);
-							instruments[i].notes[0].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal / 1e6);
-							*/
-							instruments[i].notes[0].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal * 256 / 1e3);
-							instruments[i].notes[0].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal * 256 / 1e3);
+							instruments[i].notes[0].attack = (float)(tables[macros[j].adsrIndex].attack / 1e3) + (float)(tables[macros[j].adsrIndex].attackDecimal * 256 / 1e6);
+							instruments[i].notes[0].decay = (float)(tables[macros[j].adsrIndex].decay / 1e3) + (float)(tables[macros[j].adsrIndex].decayDecimal * 256 / 1e6);
 							instruments[i].notes[0].sustain = (float)(tables[macros[k].adsrIndex].sustain) * 0.0244 + (float)(tables[macros[k].adsrIndex].sustainDecimal * 6.25);
-							instruments[i].notes[0].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal * 256 / 1e3);
+							instruments[i].notes[0].release = (float)(tables[macros[j].adsrIndex].release / 1e3) + (float)(tables[macros[j].adsrIndex].releaseDecimal * 256 / 1e6);
+							*/
 						}
 						
 						printf("\tRoot Key %X\n", macros[j].rootKey);
@@ -582,17 +642,17 @@ int main(int argc, const char* argv[])
 						bankTemplateText << "            Z_LowVelocity=0\n";
 						bankTemplateText << "            Z_HighVelocity=127\n";
 						bankTemplateText << "            Z_overridingRootKey=" << to_string(drums[i].notes[j].baseNote - drums[i].notes[j].transpose) << "\n"; // + drums[i].notes[j].transpose
-//						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(drums[i].notes[j].volume))) << "\n";
+						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(drums[i].notes[j].volume))) << "\n";
 						bankTemplateText << "            Z_pan=" << to_string((int)floor(getPan(drums[i].notes[j].pan))) << "\n";					
-						/*
+						
 						if (drums[i].notes[j].adsr) {
-							bankTemplateText << "            Z_attackVolEnv=" << to_string((int)timeToTimecents(drums[i].notes[j].attack)) << "\n";
-							bankTemplateText << "            Z_decayVolEnv=" << to_string((int)timeToTimecents(drums[i].notes[j].decay)) << "\n";
-//							bankTemplateText << "            Z_sustainVolEnv=" << to_string((int)floor(getSustain(drums[i].notes[j].sustain))) << "\n";
+							bankTemplateText << "            Z_attackVolEnv=" << to_string((int)(drums[i].notes[j].attack)) << "\n";
+							bankTemplateText << "            Z_decayVolEnv=" << to_string((int)(drums[i].notes[j].decay)) << "\n";
+							bankTemplateText << "            Z_sustainVolEnv=" << to_string((int)floor((drums[i].notes[j].sustain))) << "\n";
 //							bankTemplateText << "            Z_sustainVolEnv=" << to_string((int)floor(drums[i].notes[j].sustain)) << "\n";
-							bankTemplateText << "            Z_releaseVolEnv=" << to_string((int)timeToTimecents(drums[i].notes[j].release)) << "\n";
+							bankTemplateText << "            Z_releaseVolEnv=" << to_string((int)(drums[i].notes[j].release)) << "\n";
 						}
-						*/
+						
 						/*
 						bankTemplateText << "            Z_holdVolEnv=" << to_string((int)instruments[j].notes[k].getHold()) << "\n";
 						*/
@@ -613,7 +673,7 @@ int main(int argc, const char* argv[])
 			if (instruments[i].exists && instruments[i].noteCount) {
 				printf("Printing Instrument %d:\n", i);
 
-				bankTemplateText << "\n    InstrumentName=Instrument" << i << "\n";
+				bankTemplateText << "\n    InstrumentName=" << general_MIDI_instr_names[i] << "\n";
 				for (j = 0; j < instruments[i].noteCount; j++) {
 
 					if (instruments[i].notes[j].exists) {
@@ -625,17 +685,17 @@ int main(int argc, const char* argv[])
 						bankTemplateText << "            Z_LowVelocity=0\n";
 						bankTemplateText << "            Z_HighVelocity=127\n";
 						bankTemplateText << "            Z_overridingRootKey=" << to_string(instruments[i].notes[j].baseNote - instruments[i].notes[j].transpose) << "\n"; // + instruments[i].notes[j].transpose
-//						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(instruments[i].notes[j].volume))) << "\n";
+						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(instruments[i].notes[j].volume))) << "\n";
 						bankTemplateText << "            Z_pan=" << to_string((int)floor(getPan(instruments[i].notes[j].pan))) << "\n";
-						/*
+						
 						if (instruments[i].notes[j].adsr) {
-							bankTemplateText << "            Z_attackVolEnv=" << to_string((int)timeToTimecents(instruments[i].notes[j].attack)) << "\n";
-							bankTemplateText << "            Z_decayVolEnv=" << to_string((int)timeToTimecents(instruments[i].notes[j].decay)) << "\n";
-//							bankTemplateText << "            Z_sustainVolEnv=" << to_string((int)floor(getSustain(instruments[i].notes[j].sustain))) << "\n";
+							bankTemplateText << "            Z_attackVolEnv=" << to_string((int)(instruments[i].notes[j].attack)) << "\n";
+							bankTemplateText << "            Z_decayVolEnv=" << to_string((int)(instruments[i].notes[j].decay)) << "\n";
+							bankTemplateText << "            Z_sustainVolEnv=" << to_string((int)floor((instruments[i].notes[j].sustain))) << "\n";
 //							bankTemplateText << "            Z_sustainVolEnv=" << to_string((int)floor(instruments[i].notes[j].sustain)) << "\n";
-							bankTemplateText << "            Z_releaseVolEnv=" << to_string((int)timeToTimecents(instruments[i].notes[j].release)) << "\n";
+							bankTemplateText << "            Z_releaseVolEnv=" << to_string((int)(instruments[i].notes[j].release)) << "\n";
 						}
-						*/
+						
 						/*
 						bankTemplateText << "            Z_holdVolEnv=" << to_string((int)instruments[j].notes[k].getHold()) << "\n";
 						
@@ -668,8 +728,8 @@ int main(int argc, const char* argv[])
 
 		for (i = 0; i < 128; i++) {
 			if (instruments[i].exists && instruments[i].noteCount) {
-				bankTemplateText << "\n    PresetName=Program" << i << "Instrument\n        Bank=0\n        Program=" << i << "\n";
-				bankTemplateText << "\n        Instrument=Instrument" << i << "\n            L_LowKey=0\n            L_HighKey=127\n            L_LowVelocity=0\n            L_HighVelocity=127\n\n";
+				bankTemplateText << "\n    PresetName=" << general_MIDI_instr_names[i] << "\n        Bank=0\n        Program=" << i << "\n";
+				bankTemplateText << "\n        Instrument=" << general_MIDI_instr_names[i] << "\n            L_LowKey=0\n            L_HighKey=127\n            L_LowVelocity=0\n            L_HighVelocity=127\n\n";
 			}
 			else
 				continue;
