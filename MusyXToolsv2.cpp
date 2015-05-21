@@ -380,8 +380,6 @@ int main(int argc, const char* argv[])
 			for (j = 0; j < 128; j++) {
 				layers[i].notes[j].exists = false;
 //				printf("Reading Keymap %d: Note Region %d\n", curInstrument, j);
-				layers[i].notes[j].startNote = j;
-				layers[i].notes[j].endNote = j;
 				tempID = ReadBE(pool, 16);
 				if (tempID == 0xffff) {
 					fseek(pool, 6, SEEK_CUR);
@@ -390,9 +388,10 @@ int main(int argc, const char* argv[])
 					for (k = 0; k < layerCount - 1; k++) {	// Reading all layers prior to this one
 						if (layers[k].id == tempID) {
 							printf("Keymap %X note %d uses layer %X\n", layers[i].id, j, layers[k].id);
-							layers[i].notes[j] = layers[k].notes[1];	// Only taking the first region for now
+							layers[i].notes[j] = layers[k].notes[0];	// Only taking the first region for now
 							layers[i].notes[j].transpose = ReadBE(pool, 8);
 							layers[i].notes[j].pan = ReadBE(pool, 8);
+							layers[i].notes[j].exists = true;
 							fseek(pool, 4, SEEK_CUR);
 							break;
 						}
@@ -421,6 +420,8 @@ int main(int argc, const char* argv[])
 						}
 					}
 				}
+				layers[i].notes[j].startNote = j;
+				layers[i].notes[j].endNote = j;
 			}
 		}
 
@@ -580,8 +581,8 @@ int main(int argc, const char* argv[])
 						bankTemplateText << "            Z_HighKey=" << to_string(drums[i].notes[j].endNote) << "\n";
 						bankTemplateText << "            Z_LowVelocity=0\n";
 						bankTemplateText << "            Z_HighVelocity=127\n";
-						bankTemplateText << "            Z_overridingRootKey=" << to_string(drums[i].notes[j].baseNote + drums[i].notes[j].transpose) << "\n";
-						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(drums[i].notes[j].volume))) << "\n";
+						bankTemplateText << "            Z_overridingRootKey=" << to_string(drums[i].notes[j].baseNote - drums[i].notes[j].transpose) << "\n"; // + drums[i].notes[j].transpose
+//						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(drums[i].notes[j].volume))) << "\n";
 						bankTemplateText << "            Z_pan=" << to_string((int)floor(getPan(drums[i].notes[j].pan))) << "\n";					
 						/*
 						if (drums[i].notes[j].adsr) {
@@ -623,8 +624,8 @@ int main(int argc, const char* argv[])
 						bankTemplateText << "            Z_HighKey=" << to_string(instruments[i].notes[j].endNote) << "\n";
 						bankTemplateText << "            Z_LowVelocity=0\n";
 						bankTemplateText << "            Z_HighVelocity=127\n";
-						bankTemplateText << "            Z_overridingRootKey=" << to_string(instruments[i].notes[j].baseNote + instruments[i].notes[j].transpose) << "\n";
-						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(instruments[i].notes[j].volume))) << "\n";
+						bankTemplateText << "            Z_overridingRootKey=" << to_string(instruments[i].notes[j].baseNote - instruments[i].notes[j].transpose) << "\n"; // + instruments[i].notes[j].transpose
+//						bankTemplateText << "            Z_initialAttenuation=" << to_string((int)floor(getVolume(instruments[i].notes[j].volume))) << "\n";
 						bankTemplateText << "            Z_pan=" << to_string((int)floor(getPan(instruments[i].notes[j].pan))) << "\n";
 						/*
 						if (instruments[i].notes[j].adsr) {
